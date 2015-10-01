@@ -10,7 +10,7 @@ typedef cuFloatComplex complex_sample_t;
 #ifdef __cplusplus
 extern "C" {
 #endif    
-    void hires_4b(complex_sample_4b_t *in_data, complex_sample_4b_t *out_data, int chan_select);
+    void hires_4b(complex_sample_4b_t *, complex_sample_4b_t *, int,int,int,int );
 
 #ifdef __cplusplus
 }

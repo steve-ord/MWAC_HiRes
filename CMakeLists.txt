@@ -9,6 +9,7 @@ project(MWAC_HIRES)
 find_package(CUDA REQUIRED)
 if (CUDA_FOUND)
     # cuda library
+    cuda_include_directories( ${CUDA_TOOLKIT_ROOT_DIR}/samples/common/inc/ )
     cuda_add_library(cuda_hires SHARED ${CMAKE_SOURCE_DIR}/cuda/cuda_hires.cu)
     cuda_add_cufft_to_target(cuda_hires)
     # other library

@@ -155,7 +155,7 @@ int main(int argc, char **argv) {
                 total_gulps_read = total_gulps_read + ngulps_read;
 
                 // process
-                hires_4b((complex_sample_4b_t *) h_input, (complex_sample_4b_t *) h_output,chan_select); 
+                hires_4b((complex_sample_4b_t *) h_input, (complex_sample_4b_t *) h_output,chan_select,nfine,nhyper,ninput); 
                 // write to output
                 size_t ngulps_written = fwrite( (void *) h_output,output_gulp_size,1,output);
                 if (ngulps_written != 1) {
