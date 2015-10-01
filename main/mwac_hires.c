@@ -49,11 +49,15 @@ int main(int argc, char **argv) {
     char *input_file = NULL;
     char *list_in = NULL;
     char *output_file = NULL;
+    int mode = 0; // 0 == single file 1 == multi-file
     // channel info
     int chan_select = 0;
-    int n_hyper = 128; // no options at the moment
-    int n_fine = 128; // no options at the moment
-    
+    int nhyper = 128; // no options at the moment
+    int nfine = 128; // no options at the moment
+    // input info 
+    int ninput = 256; /// there are 256 inputs (128 dual pol)
+    int nbit = 4; // 4 bit samples
+    int verbose = 1;
     if (argc > 1) {
         int c = 0;
         while ((c = getopt(argc,argv,"hi:m:n:o:")) != -1) {
@@ -64,9 +68,11 @@ int main(int argc, char **argv) {
                     break;
                 case 'i':
                     input_file = strdup(optarg);
+                    mode = 0;
                     break;
                 case 'm':
                     list_in = strdup(optarg);
+                    mode = 1;
                     break;
                 case 'n':
                     chan_select = atoi(optarg);
@@ -76,13 +82,108 @@ int main(int argc, char **argv) {
                     break;
                 default:
                     usage();
-                    break;
+                    exit(-1);
             }
 
         }
     }
     else {
         usage();
+        exit(-1);
     }
-}   
 
+    if (mode == 1) {
+        fprintf(stderr,"Multi-input file mode not yet supported .... byeee!\n");
+    
+        usage();
+        exit(-1);
+    }
+
+    if (mode == 0) {
+        
+        if (input_file == NULL || output_file == NULL) {
+            fprintf(stderr,"Please supply input and output files\n");
+            usage();
+            exit(-1);
+        }
+
+        FILE *input = NULL;
+        FILE *output = NULL;
+        extern int errno;
+
+        input = fopen(input_file,"r");
+        if (input == NULL) {
+            fprintf(stderr,"Failed to open input(%s) - error == %s\n",input_file,strerror(errno));
+            exit(-1);
+        }
+        output = fopen(output_file,"w");
+        if (output == NULL) {
+            fprintf(stderr,"Failed to open output(%s) - error == %s\n",output_file,strerror(errno));
+            exit(-1);
+        }
+
+        // some input parameters
+        int ncomplex_per_input_gulp = ninput * nfine * nhyper;
+        int bytes_per_input_complex = 1; // 2x4bit
+        size_t input_gulp_size = ncomplex_per_input_gulp * bytes_per_input_complex;
+        if (verbose)
+            fprintf(stdout,"Input gulp size = %zu\n",input_gulp_size); 
+        // some output parameters
+        int ncomplex_per_output_gulp = ninput * nhyper;
+        int bytes_per_output_complex = 8; //float2
+        size_t output_gulp_size = ncomplex_per_output_gulp * bytes_per_output_complex;
+        if (verbose)
+            fprintf(stdout,"Output gulp size = %zu\n",output_gulp_size); 
+        // some host memory
+        char *h_input = (char *) malloc (input_gulp_size);
+        char *h_output = (char *) malloc (output_gulp_size);
+        if (h_input == NULL || h_output == NULL) {
+            fprintf(stderr,"Failed to allocate host memory: %s\n",strerror(errno));
+            exit(-1);
+        }
+        
+        size_t total_bytes_read = 0;
+        size_t total_gulps_read = 0;
+        size_t total_bytes_written = 0;
+
+        while (!feof(input)) {
+            size_t ngulps_read = fread((void *) h_input,input_gulp_size,1,input);
+            if (ngulps_read == 1) {
+
+                total_bytes_read = total_bytes_read + ngulps_read * input_gulp_size;
+                total_gulps_read = total_gulps_read + ngulps_read;
+
+                // process
+                memcpy(h_output,h_input,output_gulp_size);
+                
+                // write to output
+                size_t ngulps_written = fwrite( (void *) h_output,output_gulp_size,1,output);
+                if (ngulps_written != 1) {
+                    fprintf(stderr,"Failed to write full gulp to output: %s\n",strerror(errno));
+                }
+                else {
+                    total_bytes_written = total_bytes_written + ngulps_written*output_gulp_size;
+                }
+            }
+            else {
+                if (feof(input)) {
+                    fprintf(stdout,"EOF on input\n");
+                    fprintf(stdout,"Read %zu gulps (%zu bytes) of %d time samples from input\n",total_gulps_read,total_bytes_read,nhyper);
+                    fprintf(stdout,"Wrote %zu bytes in total \n",total_bytes_written);
+                }
+                else {
+                    fprintf(stdout,"Failed to read a full gulp from input (rval %zu) : %s\n",ngulps_read,strerror(errno));
+                }
+                break;
+            }
+        }
+        fclose(input);
+        fclose(output);
+
+        free(h_input);
+        free(h_output);
+
+
+
+    }   
+}
