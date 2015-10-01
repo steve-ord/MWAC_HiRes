@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <string.h>
 
+#include "cuda_hires.h"
 
 void usage() {
     fprintf(stderr,"mwac_hires - a simple utility to increase the frequency resolution of MWA VCS files\n");
@@ -154,8 +155,7 @@ int main(int argc, char **argv) {
                 total_gulps_read = total_gulps_read + ngulps_read;
 
                 // process
-                memcpy(h_output,h_input,output_gulp_size);
-                
+                hires_4b((complex_sample_4b_t *) h_input, (complex_sample_4b_t *) h_output,chan_select); 
                 // write to output
                 size_t ngulps_written = fwrite( (void *) h_output,output_gulp_size,1,output);
                 if (ngulps_written != 1) {
