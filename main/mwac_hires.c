@@ -22,11 +22,7 @@ int main(int argc, char **argv) {
 
     /* pseudo code for process */
     /* 
-     *  open list of input files
-     *  open output file
-     *
-     *  while input files to process 
-     *
+     *      open output file
             open input file
 
             while (!eof input file) 
@@ -131,7 +127,7 @@ int main(int argc, char **argv) {
             fprintf(stdout,"Input gulp size = %zu\n",input_gulp_size); 
         // some output parameters
         int ncomplex_per_output_gulp = ninput * nhyper;
-        int bytes_per_output_complex = 8; //float2
+        int bytes_per_output_complex = 1; //2x4bit
         size_t output_gulp_size = ncomplex_per_output_gulp * bytes_per_output_complex;
         if (verbose)
             fprintf(stdout,"Output gulp size = %zu\n",output_gulp_size); 
