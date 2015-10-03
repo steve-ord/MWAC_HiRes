@@ -7,8 +7,60 @@
 
 static __global__ void Unpack_4b(complex_sample_4b_t *, cufftComplex *, int,int,int,int);
 static __global__ void BlockReorderTranspose(cufftComplex *, complex_sample_4b_t *);
+static __global__ void Synthesise(cufftComplex *, float *);
+
+void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
+
+    // first allocate
+
+    int memsize = ntime*nchan*ninputs*sizeof(cufftComplex);
+    int ncomponents = ntime*nchan;
+
+    // first synthesize a timeseries for each input
+ 
+    cufftComplex *d_x = NULL;
+    checkCudaErrors(cudaMalloc((void **) &d_x,memsize));
+ 
+    int bpass_size = ncomponents*sizeof(float);
+
+    float *d_bpass = NULL;
+    checkCudaErrors(cudaMalloc((void **) &d_bpass,bpass_size));
+
+    float *h_bpass = NULL;
+    h_bpass = (float *) malloc(bpass_size);
+
+
+    // Each input has nchan*ntime samples
+    // this generates an array of [ninput][nsample] timeseries
+    
+    // it does this by generating the frequency components (+/- freq/2)
+    // for this it need a bandpass
+    // there are the as many frequency components as samples
+
+    for (int comp=0;comp<ncomponents;comp++) {
+        h_bpass[comp] = 1.0;
+    }
+
+    // copy to device
+
+    checkCudaErrors(cudaMemcpy(d_bpass,h_bpass,bpass_size,cudaMemcpyHostToDevice));
+
+
+    for (int inp=0;inp<ninputs;inp++){
+        cufftComplex *d_x_ptr = &d_x[inp*nchan*ntime];
+        Synthesise<<<nchan,ntime>>>(d_x_ptr,d_bpass);
+    }
+    
+    checkCudaErrors(cudaFree(d_x));
+
+}
+
+
+
+
 void test_fft() {
 #define NSAMP 8
+    cufftComplex x[NSAMP];
     float bpass[NSAMP];
 
     // ramp bandpass
@@ -16,24 +68,18 @@ void test_fft() {
         bpass[b] = b - NSAMP/2.0;
     }
     // synthesis
-    cufftComplex x[NSAMP];
-    for (int n=0 ; n < NSAMP ; n++) {
-        x[n].x = 0.0;
-        x[n].y = 0.0;
-        for (int k=0 ; k < NSAMP ; k++) {
-            float freq = k - NSAMP/2.0;
-            x[n].x =  x[n].x + bpass[k]*cosf(2*M_PI*freq*n/NSAMP) ;
-            x[n].y =  x[n].y + bpass[k]*sinf(2*M_PI*freq*n/NSAMP) ;
-        }
-    }
-
     // Allocate device memory
  
     cufftComplex *d_x = NULL;
     checkCudaErrors(cudaMalloc((void **) &d_x,NSAMP*sizeof(cufftComplex)));
 
+    float *d_bpass = NULL;
+    checkCudaErrors(cudaMalloc((void **) &d_bpass,NSAMP*sizeof(float)));
+
     // copy to device
-    checkCudaErrors(cudaMemcpy(d_x,x,NSAMP*sizeof(cufftComplex),cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_bpass,bpass,NSAMP*sizeof(float),cudaMemcpyHostToDevice));
+
+    Synthesise<<<NSAMP,1>>>(d_x,d_bpass);
 
     //FFT
     cufftHandle plan; 
@@ -117,15 +163,32 @@ void hires_4b(complex_sample_4b_t *in_data, complex_sample_4b_t *out_data, int c
     checkCudaErrors(cudaFree(d_signal));
     checkCudaErrors(cudaFree(d_fft_stack));
 }
+static __global__ void Synthesise(cufftComplex *x, float *bpass) {
+
+    const int n = blockIdx.x * blockDim.x + threadIdx.x;
+    const int nsamp = blockDim.x * gridDim.x;
+
+    x[n].x = 0.0;
+    x[n].y = 0.0;
+    
+    for (int k=0 ; k < nsamp ; k++) {
+        float freq = k - nsamp/2.0;
+        x[n].x =  x[n].x + bpass[k]*cosf(2*M_PI*freq*n/nsamp) ;
+        x[n].y =  x[n].y + bpass[k]*sinf(2*M_PI*freq*n/nsamp) ;
+    }
+}
+
+
+
 static __global__ void BlockReorderTranspose(complex_sample_t *in, complex_sample_4b_t *out){
 
-    const int input_location = blockIdx.x * gridDim.x + threadIdx.x;
+    const int input_location = blockIdx.x * blockDim.x + threadIdx.x;
     int output_location = 0;
-    if (threadIdx.x < gridDim.x/2) {
-        output_location = (threadIdx.x + gridDim.x/2)* blockDim.x + blockIdx.x;
+    if (threadIdx.x < blockDim.x/2) {
+        output_location = (threadIdx.x + blockDim.x/2)* gridDim.x + blockIdx.x;
     }
     else {
-        output_location = (threadIdx.x - gridDim.x/2)* blockDim.x + blockIdx.x;
+        output_location = (threadIdx.x - blockDim.x/2)* gridDim.x + blockIdx.x;
     }
 
     cufftComplex sample = in[input_location];
