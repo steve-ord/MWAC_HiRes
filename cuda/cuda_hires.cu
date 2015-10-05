@@ -9,18 +9,62 @@ static __global__ void Unpack_4b(complex_sample_4b_t *, cufftComplex *, int,int,
 static __global__ void BlockReorderTranspose(cufftComplex *, complex_sample_4b_t *);
 static __global__ void Synthesise(cufftComplex *, float *);
 
+
+void read_vcs_file(char *iname, int ninputs, int nchan, int ntime) {
+
+    FILE *input=NULL;
+
+    input = fopen(iname,"r");
+
+    // some input parameters
+    int ncomplex_per_input_gulp = ninputs * nchan;
+    int bytes_per_input_complex = 1; // 2x4bit
+    size_t input_gulp_size = ncomplex_per_input_gulp * bytes_per_input_complex;
+ 
+    char *h_input = (char *) malloc (input_gulp_size);
+    size_t ngulps_read = fread((void *) h_input,input_gulp_size,1,input);
+    
+    int nsamples_in = ninputs*nchan; 
+    
+    // Allocate device memory
+    // input data is a 4 bit sample for ninputs * nchan_in * nchan_out (time_samples)
+    // we need to pull out a nchan_out time_samples for channel==chan_select for each input
+    // After the FFT we output a single time sample for an nchan_out FB for all the inputs
+    // repacked into the correct order
+    
+    complex_sample_4b_t *d_signal;
+    checkCudaErrors(cudaMalloc((void **) &d_signal,nsamples_in*1));
+     
+    complex_sample_t *d_stack;
+    checkCudaErrors(cudaMalloc((void **) &d_stack,nsamples_in*sizeof(complex_sample_t)));
+
+    // copy data to Device
+    checkCudaErrors(cudaMemcpy(d_signal,h_input,nsamples_in,cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaFree(d_stack));
+    checkCudaErrors(cudaFree(d_signal));
+
+}
+
 void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
 
     // first allocate
 
-    int memsize = ntime*nchan*ninputs*sizeof(cufftComplex);
-    int ncomponents = ntime*nchan;
+    int memsize = nchan*ninputs*sizeof(cufftComplex);
+    int ncomponents = nchan;
+
+    cufftComplex *h_x = (cufftComplex *) malloc(memsize);
 
     // first synthesize a timeseries for each input
  
     cufftComplex *d_x = NULL;
     checkCudaErrors(cudaMalloc((void **) &d_x,memsize));
- 
+
+    // some device memory for the 4b data
+
+    complex_sample_4b_t *d_sig = NULL;
+    checkCudaErrors(cudaMalloc((void **) &d_sig,nchan*ninputs));
+
     int bpass_size = ncomponents*sizeof(float);
 
     float *d_bpass = NULL;
@@ -38,20 +82,60 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
     // there are the as many frequency components as samples
 
     for (int comp=0;comp<ncomponents;comp++) {
-        h_bpass[comp] = 1.0;
+        if (comp != 4) {
+            h_bpass[comp] = 1.0;
+        }
+        else {
+            h_bpass[comp] = 2.0;
+        }
     }
 
     // copy to device
 
     checkCudaErrors(cudaMemcpy(d_bpass,h_bpass,bpass_size,cudaMemcpyHostToDevice));
 
+    cufftHandle plan; 
+    checkCudaErrors(cufftPlan1d(&plan, nchan, CUFFT_C2C, ninputs)); 
 
-    for (int inp=0;inp<ninputs;inp++){
-        cufftComplex *d_x_ptr = &d_x[inp*nchan*ntime];
-        Synthesise<<<nchan,ntime>>>(d_x_ptr,d_bpass);
+    FILE *fout = NULL;
+
+    fout = fopen(outname,"w");
+
+    if (fout == NULL) {
+        fprintf(stderr,"Failed to open %s\n",outname);
+        exit(-1);
     }
+
+    for (int tim=0;tim<ntime;tim++) {
+        
+        fprintf(stderr,"done %d of %d\n",tim,ntime);
+
+        for (int inp=0;inp<ninputs;inp++){
+            cufftComplex *d_x_ptr = &d_x[inp*nchan];
+            Synthesise<<<nchan,1>>>(d_x_ptr,d_bpass);
+        }
     
+        // FFT into channels
+        // input array [ntime][inputs][nchan]
+        checkCudaErrors(cufftExecC2C(plan, (cufftComplex *)d_x, (cufftComplex *)d_x, CUFFT_FORWARD));
+
+        /* now we need the re-order and transpose */
+
+        BlockReorderTranspose<<<ninputs,nchan>>>(d_x,d_sig);
+    
+        checkCudaErrors(cudaMemcpy(h_x,d_sig,ninputs*nchan,cudaMemcpyDeviceToHost));
+        
+        fout = fopen(outname,"a");
+
+        fwrite(h_x,ninputs*nchan,1,fout);
+
+        fclose(fout);
+
+
+    }
+
     checkCudaErrors(cudaFree(d_x));
+    checkCudaErrors(cudaFree(d_bpass));
 
 }
 
@@ -60,45 +144,55 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
 
 void test_fft() {
 #define NSAMP 8
-    cufftComplex x[NSAMP];
+#define NINPUT 4
+
+    cufftComplex x[NSAMP*NINPUT];
     float bpass[NSAMP];
 
     // ramp bandpass
     for (int b = 0; b < NSAMP; b++) {
-        bpass[b] = b - NSAMP/2.0;
+        bpass[b] = b;
     }
     // synthesis
     // Allocate device memory
  
     cufftComplex *d_x = NULL;
-    checkCudaErrors(cudaMalloc((void **) &d_x,NSAMP*sizeof(cufftComplex)));
+    checkCudaErrors(cudaMalloc((void **) &d_x,NSAMP*NINPUT*sizeof(cufftComplex)));
 
     float *d_bpass = NULL;
     checkCudaErrors(cudaMalloc((void **) &d_bpass,NSAMP*sizeof(float)));
 
     // copy to device
     checkCudaErrors(cudaMemcpy(d_bpass,bpass,NSAMP*sizeof(float),cudaMemcpyHostToDevice));
-
-    Synthesise<<<NSAMP,1>>>(d_x,d_bpass);
+    
+    for (int inp = 0; inp <NINPUT;inp++) {
+        cufftComplex *d_ptr = &d_x[inp*NSAMP];
+        Synthesise<<<NSAMP,1>>>(d_ptr,d_bpass);
+    }
 
     //FFT
     cufftHandle plan; 
-    checkCudaErrors(cufftPlan1d(&plan, NSAMP, CUFFT_C2C, 1)); 
+    checkCudaErrors(cufftPlan1d(&plan, NSAMP, CUFFT_C2C, NINPUT)); 
     checkCudaErrors(cufftExecC2C(plan, (cufftComplex *)d_x, (cufftComplex *)d_x, CUFFT_FORWARD));
 
+
     // copy back
-    checkCudaErrors(cudaMemcpy(x,d_x,NSAMP*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(x,d_x,NSAMP*NINPUT*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
 
     // check
+    for (int inp=0;inp<NINPUT;inp++) {
 
-    for (int i=0;i<NSAMP;i++) {
-        
-        x[i].x = x[i].x/NSAMP;
-        x[i].y = x[i].y/NSAMP;
+        for (int i=0;i<NSAMP;i++) {
+            int ii = inp*NSAMP + i; 
+            x[ii].x = x[ii].x/NSAMP;
+            x[ii].y = x[ii].y/NSAMP;
 
-        float abs_x = x[i].x * x[i].x + x[i].y*x[i].y;
-        fprintf(stdout,"%f --- %f\n",bpass[i],sqrtf(abs_x));
+            float abs_x = x[ii].x * x[ii].x + x[ii].y*x[ii].y;
+            fprintf(stdout,"%d: %f --- %f\n",inp,bpass[i],sqrtf(abs_x));
+        }
     }
+    checkCudaErrors(cudaFree(d_x));
+    checkCudaErrors(cudaFree(d_bpass));
 }
 
 void hires_4b(complex_sample_4b_t *in_data, complex_sample_4b_t *out_data, int chan_select, int nchan_in, int nchan_out, int ninputs) {

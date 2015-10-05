@@ -13,6 +13,7 @@ extern "C" {
     void hires_4b(complex_sample_4b_t *, complex_sample_4b_t *, int,int,int,int );
     void test_fft();
     void make_vcs_file(char *, int , int , int ); 
+    void read_vcs_file(char *, int , int , int ); 
 #ifdef __cplusplus
 }
 #endif
