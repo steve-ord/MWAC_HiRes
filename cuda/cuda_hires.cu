@@ -61,7 +61,7 @@ void read_vcs_file(char *iname, int ninputs, int nchan, int ntime) {
     for (int inp=0;inp<ninputs;inp++){ 
         for (int tim=0;tim<ntime;tim++){   
             cufftComplex sample = h_unpacked[inp*ntime + tim];
-            fprintf(stdout,"Input %d Sampnum %d value (x + iy) %f + i.%f\n",inp,tim,sample.x,sample.y);
+            fprintf(stdout,"Input %d Sampnum %d value (x + iy) %f + %f(i)\n",inp,tim,sample.x,sample.y);
         }
     }
 
@@ -172,7 +172,7 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
                 h_x[ii].y = h_x[ii].y;
 
                 float abs_x = h_x[ii].x * h_x[ii].x + h_x[ii].y*h_x[ii].y;
-                fprintf(stdout,"input %d: ch %d (predicted) %f --- (actual) %f (%f+i%f)\n",inp,i,h_bpass[i],sqrtf(abs_x),h_x[ii].x,h_x[ii].y);
+                fprintf(stdout,"input %d: ch %d (predicted) %f --- (actual) %f (%f+%f(i))\n",inp,i,h_bpass[i],sqrtf(abs_x),h_x[ii].x,h_x[ii].y);
             }
         }
 
@@ -356,8 +356,10 @@ static __global__ void BlockReorderTo4b(complex_sample_t *in, complex_sample_4b_
     }
 
     cufftComplex sample;
-    sample.x = in[input_location].x/blockDim.x; // normalise
-    sample.y = in[input_location].y/blockDim.x; // normalise
+//    sample.x = in[input_location].x/blockDim.x; // normalise
+//    sample.y = in[input_location].y/blockDim.x; // normalise
+    sample.x = in[input_location].x; // normalise
+    sample.y = in[input_location].y; // normalise
     int8_t sample_x = __float2int_rn(sample.x); 
     int8_t sample_y = __float2int_rn(sample.y); 
     
@@ -396,10 +398,10 @@ static __global__ void Unpack_4b(complex_sample_4b_t *in_raw, complex_sample_t *
     uint8_t original = sample & 0xf;
 
     if (original >= 0x8) {
-       fft_stack[out_location].y = __uint2float_rn(original - 0x10);
+       fft_stack[out_location].y = __int2float_rn(original - 0x10);
     }
     else {
-       fft_stack[out_location].y = __uint2float_rn(original);
+       fft_stack[out_location].y = __int2float_rn(original);
     }
 
     sample >>= 4;
@@ -408,10 +410,10 @@ static __global__ void Unpack_4b(complex_sample_4b_t *in_raw, complex_sample_t *
     
 
     if (original >= 0x8) {
-       fft_stack[out_location].x = __uint2float_rn(original - 0x10);
+       fft_stack[out_location].x = __int2float_rn(original - 0x10);
     }
     else {
-       fft_stack[out_location].x = __uint2float_rn(original);
+       fft_stack[out_location].x = __int2float_rn(original);
     }
 
 }

@@ -13,6 +13,7 @@ void usage() {
     fprintf(stderr,"\t-i <input file> -- Individual VCS file\n");
     fprintf(stderr,"\t-o <output file> --  Individual Output file\n");
     fprintf(stderr,"\t-n <input channel select> -- Which channel to hyper-fine split\n");
+    fprintf(stderr,"\n-r <file> -- Read 1 time step of input file (assumes 128 channels x 256 inputs\n");
     fprintf(stderr,"\nMulti-file mode\n");
     fprintf(stderr,"\t-m <list of input files>\n");
     fprintf(stderr,"\t-n <input channel select>\n");
@@ -57,7 +58,7 @@ int main(int argc, char **argv) {
     int verbose = 1;
     if (argc > 1) {
         int c = 0;
-        while ((c = getopt(argc,argv,"hi:m:n:o:")) != -1) {
+        while ((c = getopt(argc,argv,"hi:m:n:o:r:")) != -1) {
             switch (c) {
                 case 'h':
                     usage();
@@ -76,6 +77,10 @@ int main(int argc, char **argv) {
                     break;
                 case 'o':
                     output_file = strdup(optarg);
+                    break;
+                case 'r':
+                    read_vcs_file(optarg,256,128,1);
+                    exit(-1);
                     break;
                 default:
                     usage();
