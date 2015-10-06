@@ -6,7 +6,8 @@
 #include "cuda_hires.h"
 
 static __global__ void Unpack_4b(complex_sample_4b_t *, cufftComplex *, int,int,int,int);
-static __global__ void BlockReorderTranspose(cufftComplex *, complex_sample_4b_t *);
+static __global__ void BlockReorderTo4b(cufftComplex *, complex_sample_4b_t *);
+static __global__ void BlockReorder(cufftComplex *, cufftComplex *);
 static __global__ void Synthesise(cufftComplex *, float *);
 
 
@@ -17,14 +18,17 @@ void read_vcs_file(char *iname, int ninputs, int nchan, int ntime) {
     input = fopen(iname,"r");
 
     // some input parameters
-    int ncomplex_per_input_gulp = ninputs * nchan;
+    int ncomplex_per_input_gulp = ninputs * nchan * ntime;
     int bytes_per_input_complex = 1; // 2x4bit
     size_t input_gulp_size = ncomplex_per_input_gulp * bytes_per_input_complex;
  
     char *h_input = (char *) malloc (input_gulp_size);
+    cufftComplex *h_unpacked = (cufftComplex *) malloc (ntime*nchan*sizeof(cufftComplex));
+    bzero(h_unpacked,ntime*nchan*sizeof(cufftComplex));
+
     size_t ngulps_read = fread((void *) h_input,input_gulp_size,1,input);
     
-    int nsamples_in = ninputs*nchan; 
+    int nsamples_in = ninputs*nchan*ntime; 
     
     // Allocate device memory
     // input data is a 4 bit sample for ninputs * nchan_in * nchan_out (time_samples)
@@ -40,6 +44,29 @@ void read_vcs_file(char *iname, int ninputs, int nchan, int ntime) {
 
     // copy data to Device
     checkCudaErrors(cudaMemcpy(d_signal,h_input,nsamples_in,cudaMemcpyHostToDevice));
+
+    // unpack the 4b to complex - also transpose the input
+    // input order in [ntime][nfreq][input]
+    // output order is a single channel now in 
+    // [ninput][ntime]
+
+    Unpack_4b<<<ntime,ninputs>>>(d_signal, d_stack, 3 ,nchan,ntime,ninputs);
+
+    // to reiterate we now have ntime samples from a single channel for 
+    // all inputs
+    // copy data to Host
+
+    checkCudaErrors(cudaMemcpy(h_unpacked,d_stack,ntime*ninputs*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
+    
+    for (int inp=0;inp<ninputs;inp++){ 
+        for (int tim=0;tim<ntime;tim++){   
+            cufftComplex sample = h_unpacked[inp*ntime + tim];
+            fprintf(stdout,"Input %d Sampnum %d value (x + iy) %f + i.%f\n",inp,tim,sample.x,sample.y);
+        }
+    }
+
+    getLastCudaError("Kernel execution failed [ Unpack_4b ]");
+
 
     checkCudaErrors(cudaFree(d_stack));
     checkCudaErrors(cudaFree(d_signal));
@@ -59,6 +86,10 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
  
     cufftComplex *d_x = NULL;
     checkCudaErrors(cudaMalloc((void **) &d_x,memsize));
+ 
+    cufftComplex *d_test = NULL;
+    checkCudaErrors(cudaMalloc((void **) &d_test,memsize));
+
 
     // some device memory for the 4b data
 
@@ -82,12 +113,7 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
     // there are the as many frequency components as samples
 
     for (int comp=0;comp<ncomponents;comp++) {
-        if (comp != 4) {
-            h_bpass[comp] = 1.0;
-        }
-        else {
-            h_bpass[comp] = 2.0;
-        }
+        h_bpass[comp] = comp;
     }
 
     // copy to device
@@ -112,6 +138,10 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
 
         for (int inp=0;inp<ninputs;inp++){
             cufftComplex *d_x_ptr = &d_x[inp*nchan];
+            // get nchan samples
+            // these will be the same for each time-step
+            // and the same for each input
+            // but each sample should be different 
             Synthesise<<<nchan,1>>>(d_x_ptr,d_bpass);
         }
     
@@ -121,19 +151,33 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
 
         /* now we need the re-order and transpose */
 
-        BlockReorderTranspose<<<ninputs,nchan>>>(d_x,d_sig);
+        BlockReorderTo4b<<<ninputs,nchan>>>(d_x,d_sig);
     
         checkCudaErrors(cudaMemcpy(h_x,d_sig,ninputs*nchan,cudaMemcpyDeviceToHost));
-        
+
         fout = fopen(outname,"a");
 
         fwrite(h_x,ninputs*nchan,1,fout);
 
         fclose(fout);
+// For comparision
+        BlockReorder<<<ninputs,nchan>>>(d_x,d_test);
 
+        checkCudaErrors(cudaMemcpy(h_x,d_test,ninputs*nchan*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
+
+        for (int i=0;i<nchan;i++) {
+            for (int inp=0;inp<ninputs;inp++) {
+                int ii = i*ninputs + inp; 
+                h_x[ii].x = h_x[ii].x;
+                h_x[ii].y = h_x[ii].y;
+
+                float abs_x = h_x[ii].x * h_x[ii].x + h_x[ii].y*h_x[ii].y;
+                fprintf(stdout,"input %d: ch %d (predicted) %f --- (actual) %f (%f+i%f)\n",inp,i,h_bpass[i],sqrtf(abs_x),h_x[ii].x,h_x[ii].y);
+            }
+        }
 
     }
-
+//
     checkCudaErrors(cudaFree(d_x));
     checkCudaErrors(cudaFree(d_bpass));
 
@@ -158,6 +202,10 @@ void test_fft() {
  
     cufftComplex *d_x = NULL;
     checkCudaErrors(cudaMalloc((void **) &d_x,NSAMP*NINPUT*sizeof(cufftComplex)));
+ 
+    cufftComplex *d_x_r = NULL;
+    checkCudaErrors(cudaMalloc((void **) &d_x_r,NSAMP*NINPUT*sizeof(cufftComplex)));
+
 
     float *d_bpass = NULL;
     checkCudaErrors(cudaMalloc((void **) &d_bpass,NSAMP*sizeof(float)));
@@ -175,20 +223,21 @@ void test_fft() {
     checkCudaErrors(cufftPlan1d(&plan, NSAMP, CUFFT_C2C, NINPUT)); 
     checkCudaErrors(cufftExecC2C(plan, (cufftComplex *)d_x, (cufftComplex *)d_x, CUFFT_FORWARD));
 
+    //Reorder
+    BlockReorder<<<NINPUT,NSAMP>>>(d_x,d_x_r);
 
     // copy back
-    checkCudaErrors(cudaMemcpy(x,d_x,NSAMP*NINPUT*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(x,d_x_r,NSAMP*NINPUT*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
 
     // check
-    for (int inp=0;inp<NINPUT;inp++) {
-
-        for (int i=0;i<NSAMP;i++) {
-            int ii = inp*NSAMP + i; 
-            x[ii].x = x[ii].x/NSAMP;
-            x[ii].y = x[ii].y/NSAMP;
+    for (int i=0;i<NSAMP;i++) {
+        for (int inp=0;inp<NINPUT;inp++) {
+            int ii = i*NINPUT + inp; 
+            x[ii].x = x[ii].x;
+            x[ii].y = x[ii].y;
 
             float abs_x = x[ii].x * x[ii].x + x[ii].y*x[ii].y;
-            fprintf(stdout,"%d: %f --- %f\n",inp,bpass[i],sqrtf(abs_x));
+            fprintf(stdout,"input %d: ch %d (predicted) %f --- (actual) %f (%f+i%f)\n",inp,i,bpass[i],sqrtf(abs_x),x[ii].x,x[ii].y);
         }
     }
     checkCudaErrors(cudaFree(d_x));
@@ -245,9 +294,9 @@ void hires_4b(complex_sample_4b_t *in_data, complex_sample_4b_t *out_data, int c
     // channel reordering
  
     // & transpose & float to 4
-    BlockReorderTranspose<<<ninputs,nchan_out>>>(d_fft_stack,d_signal);
+    BlockReorderTo4b<<<ninputs,nchan_out>>>(d_fft_stack,d_signal);
 
-    getLastCudaError("Kernel execution failed [ BlockReorderTranspose ]");
+    getLastCudaError("Kernel execution failed [ BlockReorderTo4b ]");
 
     // data back to host
 
@@ -258,6 +307,9 @@ void hires_4b(complex_sample_4b_t *in_data, complex_sample_4b_t *out_data, int c
     checkCudaErrors(cudaFree(d_fft_stack));
 }
 static __global__ void Synthesise(cufftComplex *x, float *bpass) {
+
+    // Synthesise the n'th time sample
+    // using the addition of +/- nsamp/2 frequency components
 
     const int n = blockIdx.x * blockDim.x + threadIdx.x;
     const int nsamp = blockDim.x * gridDim.x;
@@ -273,8 +325,26 @@ static __global__ void Synthesise(cufftComplex *x, float *bpass) {
 }
 
 
+static __global__ void BlockReorder(complex_sample_t *in, complex_sample_t *out){
 
-static __global__ void BlockReorderTranspose(complex_sample_t *in, complex_sample_4b_t *out){
+    const int input_location = blockIdx.x * blockDim.x + threadIdx.x;
+    int output_location = 0;
+    if (threadIdx.x < blockDim.x/2) {
+        output_location = (threadIdx.x + blockDim.x/2)* gridDim.x + blockIdx.x;
+    }
+    else {
+        output_location = (threadIdx.x - blockDim.x/2)* gridDim.x + blockIdx.x;
+    }
+    out[output_location].x = in[input_location].x/blockDim.x; // normalise
+    out[output_location].y = in[input_location].y/blockDim.x; // normalise
+}
+
+
+
+static __global__ void BlockReorderTo4b(complex_sample_t *in, complex_sample_4b_t *out){
+
+    /* the blockDim is essentially the number of channels */
+    /* gridDim is the number of Inputs */
 
     const int input_location = blockIdx.x * blockDim.x + threadIdx.x;
     int output_location = 0;
@@ -285,9 +355,11 @@ static __global__ void BlockReorderTranspose(complex_sample_t *in, complex_sampl
         output_location = (threadIdx.x - blockDim.x/2)* gridDim.x + blockIdx.x;
     }
 
-    cufftComplex sample = in[input_location];
-    int8_t sample_x = __float2int_ru(sample.x); 
-    int8_t sample_y = __float2int_ru(sample.y); 
+    cufftComplex sample;
+    sample.x = in[input_location].x/blockDim.x; // normalise
+    sample.y = in[input_location].y/blockDim.x; // normalise
+    int8_t sample_x = __float2int_rn(sample.x); 
+    int8_t sample_y = __float2int_rn(sample.y); 
     
 
     out[output_location] = 0x0;
@@ -313,20 +385,21 @@ static __global__ void Unpack_4b(complex_sample_4b_t *in_raw, complex_sample_t *
 
     // unpack this sample and put the result in 
     // in transposed FFT_STACK at:
-    uint64_t out_location = (input_id*blockDim.x) + time_id;
+    // output order is now just [ninput][ntime]
+
+    uint64_t out_location = (input_id*gridDim.x) + time_id;
 
     complex_sample_4b_t sample = in_raw[ii];
     
     // mask off the lowest 4
     
     uint8_t original = sample & 0xf;
-    
 
     if (original >= 0x8) {
-       fft_stack[out_location].y = original - 0x10;
+       fft_stack[out_location].y = __uint2float_rn(original - 0x10);
     }
     else {
-       fft_stack[out_location].y = original;
+       fft_stack[out_location].y = __uint2float_rn(original);
     }
 
     sample >>= 4;
@@ -335,10 +408,10 @@ static __global__ void Unpack_4b(complex_sample_4b_t *in_raw, complex_sample_t *
     
 
     if (original >= 0x8) {
-       fft_stack[out_location].x = original - 0x10;
+       fft_stack[out_location].x = __uint2float_rn(original - 0x10);
     }
     else {
-       fft_stack[out_location].x = original;
+       fft_stack[out_location].x = __uint2float_rn(original);
     }
 
 }

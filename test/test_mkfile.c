@@ -6,8 +6,9 @@
 #include "cuda_hires.h"
 
 int main(int argc, char **argv) {
-
-    make_vcs_file("test.out",256,128,128);
+    // iname, ninputs, nchan, ntime    
+    make_vcs_file("test.out",4,8,8);
+    read_vcs_file("test.out",4,8,8);
 
 }   
 
