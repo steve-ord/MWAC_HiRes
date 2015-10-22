@@ -6,9 +6,9 @@
 #include "cuda_hires.h"
 
 static __global__ void Unpack_4b(complex_sample_4b_t *, cufftComplex *, int,int,int,int);
-static __global__ void BlockReorderTo4b(cufftComplex *, complex_sample_4b_t *);
-static __global__ void BlockReorder(cufftComplex *, cufftComplex *);
-static __global__ void Synthesise(cufftComplex *, float *);
+static __global__ void BlockReorderTo4b(cufftComplex *, complex_sample_4b_t *, int);
+static __global__ void BlockReorder(cufftComplex *, cufftComplex *,int);
+static __global__ void Synthesise(cufftComplex *, float *, cufftComplex *);
 
 
 void read_vcs_file(char *iname, int ninputs, int nchan, int ntime) {
@@ -50,7 +50,7 @@ void read_vcs_file(char *iname, int ninputs, int nchan, int ntime) {
     // output order is a single channel now in 
     // [ninput][ntime]
 
-    Unpack_4b<<<ntime,ninputs>>>(d_signal, d_stack, 3 ,nchan,ntime,ninputs);
+    Unpack_4b<<<ntime,ninputs>>>(d_signal, d_stack, 4 ,nchan,1,ninputs);
 
     // to reiterate we now have ntime samples from a single channel for 
     // all inputs
@@ -79,6 +79,8 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
 
     int memsize = nchan*ninputs*sizeof(cufftComplex);
     int ncomponents = nchan;
+    extern int verbose;
+    extern const double passband[128];
 
     cufftComplex *h_x = (cufftComplex *) malloc(memsize);
 
@@ -113,7 +115,12 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
     // there are the as many frequency components as samples
 
     for (int comp=0;comp<ncomponents;comp++) {
-        h_bpass[comp] = comp;
+        if (ncomponents == 128) {
+            h_bpass[comp] = passband[comp];
+        }
+        else {
+            h_bpass[comp] = comp;
+        }
     }
 
     // copy to device
@@ -132,26 +139,86 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
         exit(-1);
     }
 
+    // we need to add noise with the same seed 
+    // for the signal
+
+    char signal_state[64];
+    initstate(1,signal_state,64);
+    char noise_state[64];
+    initstate(1024,noise_state,64);
+
+    size_t signal_size = nchan*sizeof(cufftComplex);
+    size_t noise_size = nchan*ninputs*sizeof(cufftComplex);
+
+
+    cufftComplex *h_signal_array= (cufftComplex *) malloc(signal_size);
+    cufftComplex *h_noise_array= (cufftComplex *) malloc(noise_size);
+
+    cufftComplex *d_noise_array = NULL;
+    checkCudaErrors(cudaMalloc((void **) &d_noise_array,noise_size));
+
+
+
+
+
     for (int tim=0;tim<ntime;tim++) {
         
         fprintf(stderr,"done %d of %d\n",tim,ntime);
 
+        setstate(signal_state);
+
+        for (int ch = 0 ; ch < nchan ; ch++) {
+            h_signal_array[ch].x = (random() % 1000)/10000.0; 
+            h_signal_array[ch].y = (random() % 1000)/10000.0;
+        } 
+
+        setstate(noise_state);
+
+        for (int inp=0;inp<ninputs;inp++){
+            for (int ch = 0 ; ch < nchan ; ch++) {
+                h_noise_array[inp*nchan+ch].x = (random() % 1000)/200.0 + h_signal_array[ch].x;
+                h_noise_array[inp*nchan+ch].y = (random() % 1000)/200.0 + h_signal_array[ch].y;
+            }
+
+        }
+        
+        // memcpy 
+
+        checkCudaErrors(cudaMemcpy(d_noise_array,h_noise_array,noise_size,cudaMemcpyHostToDevice));
+        
+        //
+
         for (int inp=0;inp<ninputs;inp++){
             cufftComplex *d_x_ptr = &d_x[inp*nchan];
+            cufftComplex *d_noise_array_ptr = &d_noise_array[inp*nchan];
+
             // get nchan samples
             // these will be the same for each time-step
             // and the same for each input
             // but each sample should be different 
-            Synthesise<<<nchan,1>>>(d_x_ptr,d_bpass);
+            // and more noise with a different (antenna based) seed for the noise
+
+            // We need to maintain a phase relationship that is easy to re-construct
+            // between the different signals - I suggest that we just rotate the phase of the 
+            // random complex number by the input number
+
+            // perhaps initially we do not rotate the phase ....
+            if (nchan == 128) {
+                Synthesise<<<nchan,1>>>(d_x_ptr,d_bpass,d_noise_array_ptr);
+            }
+            else {
+                Synthesise<<<nchan,1>>>(d_x_ptr,d_bpass,NULL);
+            }
         }
     
         // FFT into channels
         // input array [ntime][inputs][nchan]
-        checkCudaErrors(cufftExecC2C(plan, (cufftComplex *)d_x, (cufftComplex *)d_x, CUFFT_FORWARD));
+        if (nchan != 128)
+            checkCudaErrors(cufftExecC2C(plan, (cufftComplex *)d_x, (cufftComplex *)d_x, CUFFT_FORWARD));
 
         /* now we need the re-order and transpose */
 
-        BlockReorderTo4b<<<ninputs,nchan>>>(d_x,d_sig);
+        BlockReorderTo4b<<<ninputs,nchan>>>(d_x,d_sig,1);
     
         checkCudaErrors(cudaMemcpy(h_x,d_sig,ninputs*nchan,cudaMemcpyDeviceToHost));
 
@@ -161,7 +228,7 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
 
         fclose(fout);
 // For comparision
-        BlockReorder<<<ninputs,nchan>>>(d_x,d_test);
+        BlockReorder<<<ninputs,nchan>>>(d_x,d_test,1);
 
         checkCudaErrors(cudaMemcpy(h_x,d_test,ninputs*nchan*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
 
@@ -172,8 +239,32 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
                 h_x[ii].y = h_x[ii].y;
 
                 float abs_x = h_x[ii].x * h_x[ii].x + h_x[ii].y*h_x[ii].y;
-                fprintf(stdout,"input %d: ch %d (predicted) %f --- (actual) %f (%f+%f(i))\n",inp,i,h_bpass[i],sqrtf(abs_x),h_x[ii].x,h_x[ii].y);
+                float test_abs = 0;
+                float multiplier = 0;
+                int index = 0;
+                    
+
+                if (nchan == 128) {
+                    if (i<nchan/2) {
+                        index = i+nchan/2;
+                    }
+                    else {
+                        index = i-nchan/2;
+                    }
+                    multiplier = h_bpass[index]*h_bpass[index];
+                    test_abs = multiplier*(h_noise_array[inp*nchan + index].x * h_noise_array[inp*nchan + index].x + h_noise_array[inp*nchan + index].y*h_noise_array[inp*nchan + index].y);
+                    if (verbose)
+                        fprintf(stdout,"input %d: ch %d (predicted) %f (%f %f(i)) --- (actual) %f (%f+%f(i))\n",inp,i,sqrtf(test_abs),h_bpass[index]*h_noise_array[inp*nchan + index].x,h_bpass[index]*h_noise_array[inp*nchan + index].y, sqrtf(abs_x),h_x[ii].x,h_x[ii].y) ;
+                }
+                else {
+
+                    test_abs = h_bpass[i]* h_bpass[i];
+                    if (verbose)
+                        fprintf(stdout,"input %d: ch %d (predicted) %f (%f %f(i)) --- (actual) %f (%f+%f(i))\n",inp,i,sqrtf(test_abs),h_bpass[i],h_bpass[i], sqrtf(abs_x),h_x[ii].x,h_x[ii].y) ;
+                }
+
             }
+
         }
 
     }
@@ -215,7 +306,7 @@ void test_fft() {
     
     for (int inp = 0; inp <NINPUT;inp++) {
         cufftComplex *d_ptr = &d_x[inp*NSAMP];
-        Synthesise<<<NSAMP,1>>>(d_ptr,d_bpass);
+        Synthesise<<<NSAMP,1>>>(d_ptr,d_bpass,NULL);
     }
 
     //FFT
@@ -224,7 +315,7 @@ void test_fft() {
     checkCudaErrors(cufftExecC2C(plan, (cufftComplex *)d_x, (cufftComplex *)d_x, CUFFT_FORWARD));
 
     //Reorder
-    BlockReorder<<<NINPUT,NSAMP>>>(d_x,d_x_r);
+    BlockReorder<<<NINPUT,NSAMP>>>(d_x,d_x_r,NSAMP);
 
     // copy back
     checkCudaErrors(cudaMemcpy(x,d_x_r,NSAMP*NINPUT*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
@@ -294,7 +385,7 @@ void hires_4b(complex_sample_4b_t *in_data, complex_sample_4b_t *out_data, int c
     // channel reordering
  
     // & transpose & float to 4
-    BlockReorderTo4b<<<ninputs,nchan_out>>>(d_fft_stack,d_signal);
+    BlockReorderTo4b<<<ninputs,nchan_out>>>(d_fft_stack,d_signal,1);
 
     getLastCudaError("Kernel execution failed [ BlockReorderTo4b ]");
 
@@ -306,26 +397,44 @@ void hires_4b(complex_sample_4b_t *in_data, complex_sample_4b_t *out_data, int c
     checkCudaErrors(cudaFree(d_signal));
     checkCudaErrors(cudaFree(d_fft_stack));
 }
-static __global__ void Synthesise(cufftComplex *x, float *bpass) {
+static __global__ void Synthesise(cufftComplex *x, float *bpass, cufftComplex *noise) {
 
     // Synthesise the n'th time sample
     // using the addition of +/- nsamp/2 frequency components
+
+    // This is modulated by the bandpass
+    // If a noise spectrum (containing signal + noise) is present
 
     const int n = blockIdx.x * blockDim.x + threadIdx.x;
     const int nsamp = blockDim.x * gridDim.x;
 
     x[n].x = 0.0;
     x[n].y = 0.0;
-    
-    for (int k=0 ; k < nsamp ; k++) {
-        float freq = k - nsamp/2.0;
-        x[n].x =  x[n].x + bpass[k]*cosf(2*M_PI*freq*n/nsamp) ;
-        x[n].y =  x[n].y + bpass[k]*sinf(2*M_PI*freq*n/nsamp) ;
+    if (noise == NULL) {
+        for (int k=0 ; k < nsamp ; k++) {
+            float freq = k - nsamp/2.0;
+            x[n].x =  x[n].x + bpass[k]*cosf(2*M_PI*freq*n/nsamp) ;
+            x[n].y =  x[n].y + bpass[k]*sinf(2*M_PI*freq*n/nsamp) ;
+        }
+    }
+    else { 
+       int in_index = 0;
+       int out_index = n;  
+       if (n < blockDim.x/2) { 
+                in_index = n+blockDim.x/2;
+                x[n].x =  bpass[in_index]*noise[in_index].x;
+                x[n].y =  bpass[in_index]*noise[in_index].y;
+       }
+       else {
+                in_index = n-blockDim.x/2;
+                x[n].x =  bpass[in_index]*noise[in_index].x;
+                x[n].y =  bpass[in_index]*noise[in_index].y;
+       }
     }
 }
 
 
-static __global__ void BlockReorder(complex_sample_t *in, complex_sample_t *out){
+static __global__ void BlockReorder(complex_sample_t *in, complex_sample_t *out,int scale){
 
     const int input_location = blockIdx.x * blockDim.x + threadIdx.x;
     int output_location = 0;
@@ -335,13 +444,13 @@ static __global__ void BlockReorder(complex_sample_t *in, complex_sample_t *out)
     else {
         output_location = (threadIdx.x - blockDim.x/2)* gridDim.x + blockIdx.x;
     }
-    out[output_location].x = in[input_location].x/blockDim.x; // normalise
-    out[output_location].y = in[input_location].y/blockDim.x; // normalise
+    out[output_location].x = in[input_location].x/scale; // normalise
+    out[output_location].y = in[input_location].y/scale; // normalise
 }
 
 
 
-static __global__ void BlockReorderTo4b(complex_sample_t *in, complex_sample_4b_t *out){
+static __global__ void BlockReorderTo4b(complex_sample_t *in, complex_sample_4b_t *out, int scale){
 
     /* the blockDim is essentially the number of channels */
     /* gridDim is the number of Inputs */
@@ -356,19 +465,16 @@ static __global__ void BlockReorderTo4b(complex_sample_t *in, complex_sample_4b_
     }
 
     cufftComplex sample;
-//    sample.x = in[input_location].x/blockDim.x; // normalise
-//    sample.y = in[input_location].y/blockDim.x; // normalise
-    sample.x = in[input_location].x; // normalise
-    sample.y = in[input_location].y; // normalise
-    int8_t sample_x = __float2int_rn(sample.x); 
-    int8_t sample_y = __float2int_rn(sample.y); 
+    sample.x = in[input_location].x/scale; // normalise
+    sample.y = in[input_location].y/scale; // normalise
+    int8_t sample_x = (int8_t) (sample.x); 
+    int8_t sample_y = (int8_t) (sample.y); 
     
 
     out[output_location] = 0x0;
     out[output_location] = (sample_y & 0xf);
     
     sample_x = sample_x & 0xf;
-
     out[output_location] = out[output_location] | (sample_x << 4);
 
 }
@@ -398,10 +504,10 @@ static __global__ void Unpack_4b(complex_sample_4b_t *in_raw, complex_sample_t *
     uint8_t original = sample & 0xf;
 
     if (original >= 0x8) {
-       fft_stack[out_location].y = __int2float_rn(original - 0x10);
+       fft_stack[out_location].y = (float) (original - 0x10);
     }
     else {
-       fft_stack[out_location].y = __int2float_rn(original);
+       fft_stack[out_location].y = (float) (original);
     }
 
     sample >>= 4;
@@ -410,10 +516,10 @@ static __global__ void Unpack_4b(complex_sample_4b_t *in_raw, complex_sample_t *
     
 
     if (original >= 0x8) {
-       fft_stack[out_location].x = __int2float_rn(original - 0x10);
+       fft_stack[out_location].x = (float) (original - 0x10);
     }
     else {
-       fft_stack[out_location].x = __int2float_rn(original);
+       fft_stack[out_location].x = (float) (original);
     }
 
 }
