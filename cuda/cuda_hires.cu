@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include <cufft.h>
+#include <math.h>
 #include <helper_cuda.h>
 #include <helper_functions.h>
 #include <complex.h>
@@ -10,6 +11,15 @@ static __global__ void BlockReorderTo4b(cufftComplex *, complex_sample_4b_t *, i
 static __global__ void BlockReorder(cufftComplex *, cufftComplex *,int);
 static __global__ void Synthesise(cufftComplex *, float *, cufftComplex *);
 
+
+void get_normal_random (float U, float V, float *ans) {
+
+    // Box-Muller
+
+    *ans = (sqrt(-2*logf(U))*cosf(2.0*M_PI*V));
+    ans++;
+    *ans = (sqrt(-2*logf(U))*sinf(2.0*M_PI*V));
+}
 
 void read_vcs_file(char *iname, int ninputs, int nchan, int ntime) {
 
@@ -81,6 +91,7 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
     int ncomponents = nchan;
     extern int verbose;
     extern const double passband[128];
+    extern const double profile[64];
 
     cufftComplex *h_x = (cufftComplex *) malloc(memsize);
 
@@ -159,25 +170,63 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
 
 
 
-
-
+    //quadrature sampling each (10kHz) channel
+    //
+    float fc = 5000.0;
+    
     for (int tim=0;tim<ntime;tim++) {
         
         fprintf(stderr,"done %d of %d\n",tim,ntime);
 
-        setstate(signal_state);
+        char *cur_state = setstate(signal_state);
+
+        memcpy(noise_state,cur_state,64);
+        // I need to add some structure to the time domain
+        // best way to do this is with a nice pulsar profile ....
+    
+        double value = profile[tim%64];
 
         for (int ch = 0 ; ch < nchan ; ch++) {
-            h_signal_array[ch].x = (random() % 1000)/10000.0; 
-            h_signal_array[ch].y = (random() % 1000)/10000.0;
+            float U=0;
+            float V=0;
+            while (U == 0 || U == 1) {
+                U = (random() % 1000)/1000.0;
+            }
+            while (V == 0 || V == 1) {
+                V = (random() % 1000)/1000.0;
+            }
+
+            float ans[2];
+            get_normal_random(U,V,&ans[0]);
+            h_signal_array[ch].x = value*ans[0]/1.0;
+            h_signal_array[ch].y = value*ans[1]/1.0;
         } 
 
-        setstate(noise_state);
+        cur_state = setstate(noise_state);
+
+        memcpy(signal_state,cur_state,64);
 
         for (int inp=0;inp<ninputs;inp++){
             for (int ch = 0 ; ch < nchan ; ch++) {
-                h_noise_array[inp*nchan+ch].x = (random() % 1000)/200.0 + h_signal_array[ch].x;
-                h_noise_array[inp*nchan+ch].y = (random() % 1000)/200.0 + h_signal_array[ch].y;
+                float U=0;
+                float V=0;
+                while (U == 0 || U == 1) {
+                    U = (random() % 1000)/1000.0;
+                }
+                while (V == 0 || V == 1) {
+                    V = (random() % 1000)/1000.0;
+                }
+
+                float ans[2];
+
+                get_normal_random(U,V,&ans[0]);
+
+
+                // h_noise_array[inp*nchan+ch].x = sinf(2.0*M_PI*fc*float(tim)/ntime) * (5.0*ans[0] + h_signal_array[ch].x);
+                // h_noise_array[inp*nchan+ch].y = cosf(2.0*M_PI*fc*float(tim)/ntime) * (5.0*ans[0] + h_signal_array[ch].x);
+            
+                h_noise_array[inp*nchan+ch].x = (5.0*ans[0] + h_signal_array[ch].x);
+                h_noise_array[inp*nchan+ch].y = (5.0*ans[1] + h_signal_array[ch].y);
             }
 
         }
