@@ -198,8 +198,8 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
 
             float ans[2];
             get_normal_random(U,V,&ans[0]);
-            h_signal_array[ch].x = value*ans[0]/1.0;
-            h_signal_array[ch].y = value*ans[1]/1.0;
+            h_signal_array[ch].x = value*ans[0]/10.0;
+            h_signal_array[ch].y = value*ans[1]/10.0;
         } 
 
         cur_state = setstate(noise_state);
@@ -225,8 +225,8 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
                 // h_noise_array[inp*nchan+ch].x = sinf(2.0*M_PI*fc*float(tim)/ntime) * (5.0*ans[0] + h_signal_array[ch].x);
                 // h_noise_array[inp*nchan+ch].y = cosf(2.0*M_PI*fc*float(tim)/ntime) * (5.0*ans[0] + h_signal_array[ch].x);
             
-                h_noise_array[inp*nchan+ch].x = (5.0*ans[0] + h_signal_array[ch].x);
-                h_noise_array[inp*nchan+ch].y = (5.0*ans[1] + h_signal_array[ch].y);
+                h_noise_array[inp*nchan+ch].x = (2.0*ans[0] + h_signal_array[ch].x);
+                h_noise_array[inp*nchan+ch].y = (2.0*ans[1] + h_signal_array[ch].y);
             }
 
         }
