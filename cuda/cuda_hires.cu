@@ -1,8 +1,11 @@
 #include <cuda_runtime.h>
 #include <cufft.h>
 #include <math.h>
-#include <helper_cuda.h>
-#include <helper_functions.h>
+
+#include "cuda_error.h"
+//#include <helper_cuda.h>
+//#include <helper_functions.h>
+
 #include <complex.h>
 #include "cuda_hires.h"
 
@@ -47,13 +50,13 @@ void read_vcs_file(char *iname, int ninputs, int nchan, int ntime) {
     // repacked into the correct order
     
     complex_sample_4b_t *d_signal;
-    checkCudaErrors(cudaMalloc((void **) &d_signal,nsamples_in*1));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_signal,nsamples_in*1));
      
     complex_sample_t *d_stack;
-    checkCudaErrors(cudaMalloc((void **) &d_stack,nsamples_in*sizeof(complex_sample_t)));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_stack,nsamples_in*sizeof(complex_sample_t)));
 
     // copy data to Device
-    checkCudaErrors(cudaMemcpy(d_signal,h_input,nsamples_in,cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_signal,h_input,nsamples_in,cudaMemcpyHostToDevice));
 
     // unpack the 4b to complex - also transpose the input
     // input order in [ntime][nfreq][input]
@@ -66,7 +69,7 @@ void read_vcs_file(char *iname, int ninputs, int nchan, int ntime) {
     // all inputs
     // copy data to Host
 
-    checkCudaErrors(cudaMemcpy(h_unpacked,d_stack,ntime*ninputs*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(h_unpacked,d_stack,ntime*ninputs*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
     
     for (int inp=0;inp<ninputs;inp++){ 
         for (int tim=0;tim<ntime;tim++){   
@@ -78,8 +81,8 @@ void read_vcs_file(char *iname, int ninputs, int nchan, int ntime) {
     getLastCudaError("Kernel execution failed [ Unpack_4b ]");
 
 
-    checkCudaErrors(cudaFree(d_stack));
-    checkCudaErrors(cudaFree(d_signal));
+    CHECK_CUDA_ERROR(cudaFree(d_stack));
+    CHECK_CUDA_ERROR(cudaFree(d_signal));
 
 }
 
@@ -98,21 +101,21 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
     // first synthesize a timeseries for each input
  
     cufftComplex *d_x = NULL;
-    checkCudaErrors(cudaMalloc((void **) &d_x,memsize));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_x,memsize));
  
     cufftComplex *d_test = NULL;
-    checkCudaErrors(cudaMalloc((void **) &d_test,memsize));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_test,memsize));
 
 
     // some device memory for the 4b data
 
     complex_sample_4b_t *d_sig = NULL;
-    checkCudaErrors(cudaMalloc((void **) &d_sig,nchan*ninputs));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_sig,nchan*ninputs));
 
     int bpass_size = ncomponents*sizeof(float);
 
     float *d_bpass = NULL;
-    checkCudaErrors(cudaMalloc((void **) &d_bpass,bpass_size));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_bpass,bpass_size));
 
     float *h_bpass = NULL;
     h_bpass = (float *) malloc(bpass_size);
@@ -136,10 +139,10 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
 
     // copy to device
 
-    checkCudaErrors(cudaMemcpy(d_bpass,h_bpass,bpass_size,cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_bpass,h_bpass,bpass_size,cudaMemcpyHostToDevice));
 
     cufftHandle plan; 
-    checkCudaErrors(cufftPlan1d(&plan, nchan, CUFFT_C2C, ninputs)); 
+    CHECK_CUDA_ERROR(cufftPlan1d(&plan, nchan, CUFFT_C2C, ninputs)); 
 
     FILE *fout = NULL;
 
@@ -166,7 +169,7 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
     cufftComplex *h_noise_array= (cufftComplex *) malloc(noise_size);
 
     cufftComplex *d_noise_array = NULL;
-    checkCudaErrors(cudaMalloc((void **) &d_noise_array,noise_size));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_noise_array,noise_size));
 
 
 
@@ -233,7 +236,7 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
         
         // memcpy 
 
-        checkCudaErrors(cudaMemcpy(d_noise_array,h_noise_array,noise_size,cudaMemcpyHostToDevice));
+        CHECK_CUDA_ERROR(cudaMemcpy(d_noise_array,h_noise_array,noise_size,cudaMemcpyHostToDevice));
         
         //
 
@@ -263,13 +266,13 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
         // FFT into channels
         // input array [ntime][inputs][nchan]
         if (nchan != 128)
-            checkCudaErrors(cufftExecC2C(plan, (cufftComplex *)d_x, (cufftComplex *)d_x, CUFFT_FORWARD));
+            CHECK_CUDA_ERROR(cufftExecC2C(plan, (cufftComplex *)d_x, (cufftComplex *)d_x, CUFFT_FORWARD));
 
         /* now we need the re-order and transpose */
 
         BlockReorderTo4b<<<ninputs,nchan>>>(d_x,d_sig,1);
     
-        checkCudaErrors(cudaMemcpy(h_x,d_sig,ninputs*nchan,cudaMemcpyDeviceToHost));
+        CHECK_CUDA_ERROR(cudaMemcpy(h_x,d_sig,ninputs*nchan,cudaMemcpyDeviceToHost));
 
         fout = fopen(outname,"a");
 
@@ -279,7 +282,7 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
 // For comparision
         BlockReorder<<<ninputs,nchan>>>(d_x,d_test,1);
 
-        checkCudaErrors(cudaMemcpy(h_x,d_test,ninputs*nchan*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
+        CHECK_CUDA_ERROR(cudaMemcpy(h_x,d_test,ninputs*nchan*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
 
         for (int i=0;i<nchan;i++) {
             for (int inp=0;inp<ninputs;inp++) {
@@ -318,8 +321,8 @@ void make_vcs_file(char *outname, int ninputs, int nchan, int ntime) {
 
     }
 //
-    checkCudaErrors(cudaFree(d_x));
-    checkCudaErrors(cudaFree(d_bpass));
+    CHECK_CUDA_ERROR(cudaFree(d_x));
+    CHECK_CUDA_ERROR(cudaFree(d_bpass));
 
 }
 
@@ -341,17 +344,17 @@ void test_fft() {
     // Allocate device memory
  
     cufftComplex *d_x = NULL;
-    checkCudaErrors(cudaMalloc((void **) &d_x,NSAMP*NINPUT*sizeof(cufftComplex)));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_x,NSAMP*NINPUT*sizeof(cufftComplex)));
  
     cufftComplex *d_x_r = NULL;
-    checkCudaErrors(cudaMalloc((void **) &d_x_r,NSAMP*NINPUT*sizeof(cufftComplex)));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_x_r,NSAMP*NINPUT*sizeof(cufftComplex)));
 
 
     float *d_bpass = NULL;
-    checkCudaErrors(cudaMalloc((void **) &d_bpass,NSAMP*sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_bpass,NSAMP*sizeof(float)));
 
     // copy to device
-    checkCudaErrors(cudaMemcpy(d_bpass,bpass,NSAMP*sizeof(float),cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_bpass,bpass,NSAMP*sizeof(float),cudaMemcpyHostToDevice));
     
     for (int inp = 0; inp <NINPUT;inp++) {
         cufftComplex *d_ptr = &d_x[inp*NSAMP];
@@ -360,14 +363,14 @@ void test_fft() {
 
     //FFT
     cufftHandle plan; 
-    checkCudaErrors(cufftPlan1d(&plan, NSAMP, CUFFT_C2C, NINPUT)); 
-    checkCudaErrors(cufftExecC2C(plan, (cufftComplex *)d_x, (cufftComplex *)d_x, CUFFT_FORWARD));
+    CHECK_CUDA_ERROR(cufftPlan1d(&plan, NSAMP, CUFFT_C2C, NINPUT)); 
+    CHECK_CUDA_ERROR(cufftExecC2C(plan, (cufftComplex *)d_x, (cufftComplex *)d_x, CUFFT_FORWARD));
 
     //Reorder
     BlockReorder<<<NINPUT,NSAMP>>>(d_x,d_x_r,NSAMP);
 
     // copy back
-    checkCudaErrors(cudaMemcpy(x,d_x_r,NSAMP*NINPUT*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(x,d_x_r,NSAMP*NINPUT*sizeof(cufftComplex),cudaMemcpyDeviceToHost));
 
     // check
     for (int i=0;i<NSAMP;i++) {
@@ -380,8 +383,8 @@ void test_fft() {
             fprintf(stdout,"input %d: ch %d (predicted) %f --- (actual) %f (%f+i%f)\n",inp,i,bpass[i],sqrtf(abs_x),x[ii].x,x[ii].y);
         }
     }
-    checkCudaErrors(cudaFree(d_x));
-    checkCudaErrors(cudaFree(d_bpass));
+    CHECK_CUDA_ERROR(cudaFree(d_x));
+    CHECK_CUDA_ERROR(cudaFree(d_bpass));
 }
 
 void hires_4b(complex_sample_4b_t *in_data, complex_sample_4b_t *out_data, int chan_select, int nchan_in, int nchan_out, int ninputs) {
@@ -404,13 +407,13 @@ void hires_4b(complex_sample_4b_t *in_data, complex_sample_4b_t *out_data, int c
     int nsamples_fft_stack = ninputs*nchan_out;
 
     complex_sample_4b_t *d_signal;
-    checkCudaErrors(cudaMalloc((void **) &d_signal,nsamples_in*1));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_signal,nsamples_in*1));
     
     complex_sample_t *d_fft_stack;
-    checkCudaErrors(cudaMalloc((void **) &d_fft_stack,nsamples_fft_stack*sizeof(complex_sample_t)));
+    CHECK_CUDA_ERROR(cudaMalloc((void **) &d_fft_stack,nsamples_fft_stack*sizeof(complex_sample_t)));
 
     // copy data to Device
-    checkCudaErrors(cudaMemcpy(d_signal,in_data,nsamples_in,cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_signal,in_data,nsamples_in,cudaMemcpyHostToDevice));
 
     // call kernel to expand input data to float
     // assumes number of time samples == number of output channels
@@ -421,8 +424,8 @@ void hires_4b(complex_sample_4b_t *in_data, complex_sample_4b_t *out_data, int c
     // call kernel to batch FFT 
     // this will FFT all inputs at once
     cufftHandle plan; 
-    checkCudaErrors(cufftPlan1d(&plan, nchan_out, CUFFT_C2C, ninputs)); 
-    checkCudaErrors(cufftExecC2C(plan, (cufftComplex *)d_fft_stack, (cufftComplex *)d_fft_stack, CUFFT_FORWARD));
+    CHECK_CUDA_ERROR(cufftPlan1d(&plan, nchan_out, CUFFT_C2C, ninputs)); 
+    CHECK_CUDA_ERROR(cufftExecC2C(plan, (cufftComplex *)d_fft_stack, (cufftComplex *)d_fft_stack, CUFFT_FORWARD));
 
     // call kernels to repack
     // We will perform the reordering and repacking in a single CUDA Kernel
@@ -440,11 +443,11 @@ void hires_4b(complex_sample_4b_t *in_data, complex_sample_4b_t *out_data, int c
 
     // data back to host
 
-    checkCudaErrors(cudaMemcpy(out_data,d_signal,nsamples_out,cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(out_data,d_signal,nsamples_out,cudaMemcpyDeviceToHost));
 
     // free device memory
-    checkCudaErrors(cudaFree(d_signal));
-    checkCudaErrors(cudaFree(d_fft_stack));
+    CHECK_CUDA_ERROR(cudaFree(d_signal));
+    CHECK_CUDA_ERROR(cudaFree(d_fft_stack));
 }
 static __global__ void Synthesise(cufftComplex *x, float *bpass, cufftComplex *noise) {
 

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <errno.h>
 
 #include "cuda_hires.h"
 
@@ -111,7 +112,6 @@ int main(int argc, char **argv) {
 
         FILE *input = NULL;
         FILE *output = NULL;
-        extern int errno;
 
         input = fopen(input_file,"r");
         if (input == NULL) {
